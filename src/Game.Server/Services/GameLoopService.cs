@@ -57,10 +57,15 @@ public class GameLoopService : BackgroundService
 
     private void Tick()
     {
+        var dt = (float)NetworkConfig.TickDeltaMs / 1000f;
+
         foreach (var zone in _zoneManager.GetAllInstances())
         {
             TickZone(zone);
         }
+
+        // Update projectiles every tick
+        _networkService.UpdateProjectiles(dt);
 
         // Broadcast world state every 3 ticks (~66ms at 20Hz)
         _tickCounter++;

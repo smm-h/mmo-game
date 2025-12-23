@@ -13,6 +13,7 @@ public class GameScene : Scene
     private float _renderX;      // Smoothed render position
     private float _renderY;
     private uint _lastServerSequence;  // Last input sequence server acknowledged
+    private int _localHealth = 100;
 
     // Input prediction buffer - stores inputs for reconciliation
     private readonly Queue<InputRecord> _inputBuffer = new();
@@ -21,14 +22,20 @@ public class GameScene : Scene
     // Other players
     private readonly Dictionary<uint, PlayerState> _players = new();
 
+    // Projectiles
+    private readonly Dictionary<uint, ProjectileState> _projectiles = new();
+
     // Input
     private KeyboardState _prevKeyboard;
+    private MouseState _prevMouse;
     private uint _inputSequence;
     private const float MoveSpeed = 200f;
     private const float TickDelta = 1f / 60f; // Client runs at 60fps
 
     // UI
     private float _latency;
+    private string _killFeed = "";
+    private float _killFeedTimer;
 
     public GameScene(uint localNetId, float spawnX, float spawnY)
     {
@@ -44,6 +51,9 @@ public class GameScene : Scene
         NetworkClient.OnPlayerUpdate += OnPlayerUpdate;
         NetworkClient.OnLatencyUpdate += OnLatencyUpdate;
         NetworkClient.OnDisconnected += OnDisconnected;
+        NetworkClient.OnProjectileSpawn += OnProjectileSpawn;
+        NetworkClient.OnPlayerHit += OnPlayerHit;
+        NetworkClient.OnPlayerDeath += OnPlayerDeath;
         Console.WriteLine($"[Scene] GameScene entered - Local player netId={_localNetId}");
     }
 
@@ -52,15 +62,19 @@ public class GameScene : Scene
         NetworkClient.OnPlayerUpdate -= OnPlayerUpdate;
         NetworkClient.OnLatencyUpdate -= OnLatencyUpdate;
         NetworkClient.OnDisconnected -= OnDisconnected;
+        NetworkClient.OnProjectileSpawn -= OnProjectileSpawn;
+        NetworkClient.OnPlayerHit -= OnPlayerHit;
+        NetworkClient.OnPlayerDeath -= OnPlayerDeath;
     }
 
-    private void OnPlayerUpdate(uint netId, float x, float y, uint ackSequence)
+    private void OnPlayerUpdate(uint netId, float x, float y, int health, uint ackSequence)
     {
         if (netId == _localNetId)
         {
             // Server authoritative position with acknowledged sequence
             _serverX = x;
             _serverY = y;
+            _localHealth = health;
             _lastServerSequence = ackSequence;
             Reconcile();
         }
@@ -77,9 +91,43 @@ public class GameScene : Scene
             player.PrevY = player.Y;
             player.X = x;
             player.Y = y;
+            player.Health = health;
             player.InterpT = 0f;
             player.LastUpdate = DateTime.UtcNow;
         }
+    }
+
+    private void OnProjectileSpawn(uint projId, uint ownerId, float x, float y, float velX, float velY)
+    {
+        _projectiles[projId] = new ProjectileState
+        {
+            OwnerId = ownerId,
+            X = x,
+            Y = y,
+            VelX = velX,
+            VelY = velY,
+            SpawnTime = DateTime.UtcNow
+        };
+    }
+
+    private void OnPlayerHit(uint playerId, int newHealth, uint shooterId)
+    {
+        if (playerId == _localNetId)
+        {
+            _localHealth = newHealth;
+        }
+        else if (_players.TryGetValue(playerId, out var player))
+        {
+            player.Health = newHealth;
+        }
+    }
+
+    private void OnPlayerDeath(uint playerId, uint killerId)
+    {
+        var victimName = playerId == _localNetId ? "You" : $"Player {playerId}";
+        var killerName = killerId == _localNetId ? "You" : $"Player {killerId}";
+        _killFeed = $"{killerName} killed {victimName}!";
+        _killFeedTimer = 3f;
     }
 
     private void Reconcile()
@@ -136,8 +184,13 @@ public class GameScene : Scene
     {
         var dt = (float)gameTime.ElapsedGameTime.TotalSeconds;
         var keyboard = Keyboard.GetState();
+        var mouse = Mouse.GetState();
 
-        // Gather input
+        // Update kill feed timer
+        if (_killFeedTimer > 0)
+            _killFeedTimer -= dt;
+
+        // Gather movement input
         float moveX = 0, moveY = 0;
         if (keyboard.IsKeyDown(Keys.W) || keyboard.IsKeyDown(Keys.Up)) moveY = -1;
         if (keyboard.IsKeyDown(Keys.S) || keyboard.IsKeyDown(Keys.Down)) moveY = 1;
@@ -181,6 +234,32 @@ public class GameScene : Scene
             _renderY = Math.Clamp(_renderY, 20, 700);
         }
 
+        // Mouse click to shoot
+        if (mouse.LeftButton == ButtonState.Pressed && _prevMouse.LeftButton == ButtonState.Released)
+        {
+            if (_localHealth > 0)
+            {
+                NetworkClient.SendShoot(mouse.X, mouse.Y);
+            }
+        }
+
+        // Update projectiles locally (client-side prediction)
+        var expiredProjectiles = new List<uint>();
+        foreach (var (id, proj) in _projectiles)
+        {
+            proj.X += proj.VelX * dt;
+            proj.Y += proj.VelY * dt;
+
+            // Remove if out of bounds or too old
+            if (proj.X < 0 || proj.X > 1280 || proj.Y < 0 || proj.Y > 720 ||
+                (DateTime.UtcNow - proj.SpawnTime).TotalSeconds > 3)
+            {
+                expiredProjectiles.Add(id);
+            }
+        }
+        foreach (var id in expiredProjectiles)
+            _projectiles.Remove(id);
+
         // Update other players interpolation
         foreach (var player in _players.Values)
         {
@@ -203,6 +282,7 @@ public class GameScene : Scene
         }
 
         _prevKeyboard = keyboard;
+        _prevMouse = mouse;
     }
 
     public override void Draw(SpriteBatch spriteBatch, GameTime gameTime)
@@ -219,16 +299,24 @@ public class GameScene : Scene
         // Draw ground/grid
         DrawGrid(spriteBatch, pixel);
 
+        // Draw projectiles
+        foreach (var proj in _projectiles.Values)
+        {
+            var projColor = proj.OwnerId == _localNetId ? Color.Yellow : Color.Orange;
+            spriteBatch.Draw(pixel, new Rectangle((int)proj.X - 4, (int)proj.Y - 4, 8, 8), projColor);
+        }
+
         // Draw other players (blue) with interpolation
         foreach (var (netId, player) in _players)
         {
             float drawX = MathHelper.Lerp(player.PrevX, player.X, player.InterpT);
             float drawY = MathHelper.Lerp(player.PrevY, player.Y, player.InterpT);
-            DrawPlayer(spriteBatch, pixel, drawX, drawY, Color.CornflowerBlue, false);
+            DrawPlayer(spriteBatch, pixel, drawX, drawY, player.Health, Color.CornflowerBlue, false);
         }
 
-        // Draw local player (green)
-        DrawPlayer(spriteBatch, pixel, _renderX, _renderY, Color.LimeGreen, true);
+        // Draw local player (green) - gray if dead
+        var localColor = _localHealth > 0 ? Color.LimeGreen : Color.Gray;
+        DrawPlayer(spriteBatch, pixel, _renderX, _renderY, _localHealth, localColor, true);
 
         // Draw UI
         DrawUI(spriteBatch, pixel);
@@ -249,7 +337,7 @@ public class GameScene : Scene
         }
     }
 
-    private void DrawPlayer(SpriteBatch spriteBatch, Texture2D pixel, float x, float y, Color color, bool isLocal)
+    private void DrawPlayer(SpriteBatch spriteBatch, Texture2D pixel, float x, float y, int health, Color color, bool isLocal)
     {
         var size = isLocal ? 40 : 32;
         var rect = new Rectangle((int)(x - size / 2), (int)(y - size / 2), size, size);
@@ -264,9 +352,19 @@ public class GameScene : Scene
         spriteBatch.Draw(pixel, new Rectangle(rect.X, rect.Y, 2, rect.Height), borderColor);
         spriteBatch.Draw(pixel, new Rectangle(rect.Right - 2, rect.Y, 2, rect.Height), borderColor);
 
-        // Direction indicator (facing up by default)
-        var indicatorRect = new Rectangle((int)(x - 4), (int)(y - size / 2 - 8), 8, 8);
-        spriteBatch.Draw(pixel, indicatorRect, Color.Yellow);
+        // Health bar above player
+        var healthBarWidth = size;
+        var healthBarHeight = 6;
+        var healthBarY = rect.Y - healthBarHeight - 4;
+        var healthPercent = Math.Clamp(health / 100f, 0f, 1f);
+
+        // Health bar background (red)
+        spriteBatch.Draw(pixel, new Rectangle(rect.X, healthBarY, healthBarWidth, healthBarHeight), Color.DarkRed);
+        // Health bar fill (green)
+        spriteBatch.Draw(pixel, new Rectangle(rect.X, healthBarY, (int)(healthBarWidth * healthPercent), healthBarHeight), Color.LimeGreen);
+        // Health bar border
+        spriteBatch.Draw(pixel, new Rectangle(rect.X, healthBarY, healthBarWidth, 1), Color.Black);
+        spriteBatch.Draw(pixel, new Rectangle(rect.X, healthBarY + healthBarHeight - 1, healthBarWidth, 1), Color.Black);
     }
 
     private void DrawUI(SpriteBatch spriteBatch, Texture2D pixel)
@@ -277,19 +375,34 @@ public class GameScene : Scene
         var font = GameMain.DefaultFont;
         if (font != null)
         {
-            spriteBatch.DrawString(font, $"Players: {_players.Count + 1}", new Vector2(20, 8), Color.White);
-            spriteBatch.DrawString(font, $"Ping: {_latency}ms", new Vector2(180, 8), Color.White);
-            spriteBatch.DrawString(font, $"Pos: ({_renderX:F0}, {_renderY:F0})", new Vector2(320, 8), Color.White);
-            spriteBatch.DrawString(font, $"Buffer: {_inputBuffer.Count}", new Vector2(500, 8), Color.Gray);
-            spriteBatch.DrawString(font, "WASD to move | ESC to disconnect", new Vector2(800, 8), Color.Gray);
+            spriteBatch.DrawString(font, $"HP: {_localHealth}", new Vector2(20, 8), _localHealth > 30 ? Color.White : Color.Red);
+            spriteBatch.DrawString(font, $"Players: {_players.Count + 1}", new Vector2(120, 8), Color.White);
+            spriteBatch.DrawString(font, $"Ping: {_latency}ms", new Vector2(260, 8), Color.White);
+            spriteBatch.DrawString(font, "WASD move | Click to shoot | ESC quit", new Vector2(700, 8), Color.Gray);
+
+            // Kill feed
+            if (_killFeedTimer > 0 && !string.IsNullOrEmpty(_killFeed))
+            {
+                var feedColor = Color.Lerp(Color.Red, Color.Transparent, 1f - (_killFeedTimer / 3f));
+                spriteBatch.DrawString(font, _killFeed, new Vector2(640 - font.MeasureString(_killFeed).X / 2, 60), feedColor);
+            }
+
+            // Death message
+            if (_localHealth <= 0)
+            {
+                var deathMsg = "YOU DIED - Respawning...";
+                spriteBatch.DrawString(font, deathMsg, new Vector2(640 - font.MeasureString(deathMsg).X / 2, 350), Color.Red);
+            }
         }
         else
         {
-            var playerCountWidth = (_players.Count + 1) * 20;
-            spriteBatch.Draw(pixel, new Rectangle(20, 15, playerCountWidth, 10), Color.Green);
+            // No font fallback
+            var healthWidth = (int)(_localHealth / 100f * 100);
+            spriteBatch.Draw(pixel, new Rectangle(20, 15, 100, 10), Color.DarkRed);
+            spriteBatch.Draw(pixel, new Rectangle(20, 15, healthWidth, 10), Color.Green);
 
             var latencyColor = _latency < 50 ? Color.Green : (_latency < 100 ? Color.Yellow : Color.Red);
-            spriteBatch.Draw(pixel, new Rectangle(200, 15, 50, 10), latencyColor);
+            spriteBatch.Draw(pixel, new Rectangle(140, 15, 50, 10), latencyColor);
         }
     }
 
@@ -307,7 +420,18 @@ public class GameScene : Scene
         public float Y;
         public float PrevX;
         public float PrevY;
+        public int Health = 100;
         public float InterpT = 1f;
         public DateTime LastUpdate = DateTime.UtcNow;
+    }
+
+    private class ProjectileState
+    {
+        public uint OwnerId;
+        public float X;
+        public float Y;
+        public float VelX;
+        public float VelY;
+        public DateTime SpawnTime;
     }
 }

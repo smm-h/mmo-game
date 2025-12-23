@@ -35,6 +35,13 @@ public enum PacketType : byte
     DamageEvent = 51,
     ItemPickup = 52,
 
+    // Combat
+    Shoot = 55,
+    ProjectileSpawn = 56,
+    ProjectileHit = 57,
+    PlayerHit = 58,
+    PlayerDeath = 59,
+
     // Server -> Client state
     WorldSnapshot = 60,
     DeltaSnapshot = 61,
