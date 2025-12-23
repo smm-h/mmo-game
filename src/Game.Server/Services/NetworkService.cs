@@ -188,7 +188,7 @@ public class NetworkService : IDisposable
                 Zone = zone,
                 X = x,
                 Y = y,
-                Radius = 180f,
+                Radius = 280f, // Larger light radius
                 IsOn = true
             });
         }

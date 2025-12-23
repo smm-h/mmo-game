@@ -401,7 +401,7 @@ public class GameScene : Scene
 
             // === Pass 3: Draw light map ===
             gd.SetRenderTarget(lightMapTarget);
-            gd.Clear(new Color(128, 128, 128)); // 50% ambient baseline
+            gd.Clear(new Color(64, 64, 64)); // 25% ambient baseline (darker)
 
             // Draw lights (additive blending)
             spriteBatch.Begin(SpriteSortMode.Deferred, BlendState.Additive);
@@ -432,7 +432,7 @@ public class GameScene : Scene
                 // Use shader to combine
                 lightingEffect.Parameters["SceneTexture"]?.SetValue(sceneTarget);
                 lightingEffect.Parameters["LightMapTexture"]?.SetValue(lightMapTarget);
-                lightingEffect.Parameters["AmbientLight"]?.SetValue(0.5f);
+                lightingEffect.Parameters["AmbientLight"]?.SetValue(0.25f);
 
                 spriteBatch.Begin(SpriteSortMode.Immediate, BlendState.Opaque, effect: lightingEffect);
                 spriteBatch.Draw(sceneTarget, Vector2.Zero, Color.White);
@@ -571,43 +571,70 @@ public class GameScene : Scene
         var dy = casterY - lightY;
         var dist = MathF.Sqrt(dx * dx + dy * dy);
 
-        if (dist < 1f || dist > lightRadius * 2f) return;
+        if (dist < 1f || dist > lightRadius * 2.5f) return;
 
         // Normalize direction
         dx /= dist;
         dy /= dist;
 
-        // Shadow length - longer when closer to light
-        var proximity = 1f - (dist / (lightRadius * 2f));
-        var shadowLength = 60f + proximity * 180f;
+        // Perpendicular for shadow width
+        var perpX = -dy;
+        var perpY = dx;
 
-        // Use soft light texture if available for nice blur
-        var shadowTex = lightTexture ?? pixel;
+        // Shadow gets MASSIVE when close to light
+        var proximity = 1f - (dist / (lightRadius * 2.5f));
+        var shadowLength = 100f + proximity * 400f; // Much longer when close
+        var nearWidth = casterSize * 0.6f;
+        var farWidth = casterSize * (2f + proximity * 8f); // Expands dramatically
 
-        // Draw shadow as series of soft ellipses extending away from light
-        const int segments = 5;
+        // 4 corners of shadow trapezoid
+        var nearLeft = new Vector2(casterX + perpX * nearWidth, casterY + perpY * nearWidth);
+        var nearRight = new Vector2(casterX - perpX * nearWidth, casterY - perpY * nearWidth);
+        var farLeft = new Vector2(casterX + dx * shadowLength + perpX * farWidth, casterY + dy * shadowLength + perpY * farWidth);
+        var farRight = new Vector2(casterX + dx * shadowLength - perpX * farWidth, casterY + dy * shadowLength - perpY * farWidth);
+
+        // Draw shadow as segments from near to far with fading intensity
+        var intensity = (int)(120 * proximity + 40);
+        const int segments = 8;
+
         for (int i = 0; i < segments; i++)
         {
-            var t = (i + 1f) / segments;
-            var intensity = (int)(100 * proximity * (1f - t * 0.7f));
+            var t1 = i / (float)segments;
+            var t2 = (i + 1) / (float)segments;
 
-            // Position along shadow
-            var segX = casterX + dx * shadowLength * t;
-            var segY = casterY + dy * shadowLength * t;
+            // Interpolate the 4 corners for this segment
+            var segNearLeft = Vector2.Lerp(nearLeft, farLeft, t1);
+            var segNearRight = Vector2.Lerp(nearRight, farRight, t1);
+            var segFarLeft = Vector2.Lerp(nearLeft, farLeft, t2);
+            var segFarRight = Vector2.Lerp(nearRight, farRight, t2);
 
-            // Shadow gets wider and softer as it extends
-            var segSize = (int)(casterSize * (1.5f + t * 2f));
+            // Fade intensity along shadow length
+            var segIntensity = (int)(intensity * (1f - t1 * 0.8f));
 
-            var rect = new Rectangle(
-                (int)(segX - segSize / 2),
-                (int)(segY - segSize / 2),
-                segSize,
-                segSize
+            // Draw as two triangles using rotated rectangles (approximation)
+            var centerX = (segNearLeft.X + segNearRight.X + segFarLeft.X + segFarRight.X) / 4f;
+            var centerY = (segNearLeft.Y + segNearRight.Y + segFarLeft.Y + segFarRight.Y) / 4f;
+            var segWidth = Vector2.Distance(segNearLeft, segNearRight) + Vector2.Distance(segFarLeft, segFarRight);
+            var segHeight = Vector2.Distance(segNearLeft, segFarLeft);
+
+            var angle = MathF.Atan2(dy, dx);
+            var rect = new Rectangle((int)centerX, (int)centerY, (int)(segWidth / 2), (int)segHeight);
+            var origin = new Vector2(segWidth / 4, segHeight / 2);
+
+            var shadowColor = new Color(segIntensity, segIntensity, segIntensity, segIntensity);
+            spriteBatch.Draw(pixel, rect, null, shadowColor, angle, origin, SpriteEffects.None, 0);
+        }
+
+        // Add soft blur at edges using light texture
+        if (lightTexture != null)
+        {
+            var blurSize = (int)(farWidth * 1.5f);
+            var blurRect = new Rectangle(
+                (int)(casterX + dx * shadowLength * 0.7f - blurSize / 2),
+                (int)(casterY + dy * shadowLength * 0.7f - blurSize / 2),
+                blurSize, blurSize
             );
-
-            // Draw soft shadow blob
-            var shadowColor = new Color(intensity, intensity, intensity, intensity);
-            spriteBatch.Draw(shadowTex, rect, shadowColor);
+            spriteBatch.Draw(lightTexture, blurRect, new Color(intensity / 2, intensity / 2, intensity / 2, intensity / 2));
         }
     }
 
