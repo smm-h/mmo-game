@@ -371,13 +371,14 @@ public class GameScene : Scene
         var lightTexture = GameMain.LightTexture;
         var sceneTarget = GameMain.SceneTarget;
         var lightMapTarget = GameMain.LightMapTarget;
+        var shadowTarget = GameMain.ShadowTarget;
         var lightingEffect = GameMain.LightingEffect;
         var gd = spriteBatch.GraphicsDevice;
 
         if (pixel == null) return;
 
         // Check if we have lamps and lighting resources
-        bool useLighting = _lamps.Count > 0 && lightTexture != null && sceneTarget != null && lightMapTarget != null;
+        bool useLighting = _lamps.Count > 0 && lightTexture != null && sceneTarget != null && lightMapTarget != null && shadowTarget != null;
 
         if (useLighting)
         {
@@ -389,21 +390,50 @@ public class GameScene : Scene
             DrawSceneContent(spriteBatch, pixel);
             spriteBatch.End();
 
-            // === Pass 2: Draw light map ===
+            // === Pass 2: Draw shadows to shadow buffer (max blend to prevent overdraw) ===
+            gd.SetRenderTarget(shadowTarget);
+            gd.Clear(Color.Transparent);
+
+            // Use max blend so overlapping shadows don't stack
+            var maxBlend = new BlendState
+            {
+                ColorSourceBlend = Blend.One,
+                ColorDestinationBlend = Blend.One,
+                ColorBlendFunction = BlendFunction.Max,
+                AlphaSourceBlend = Blend.One,
+                AlphaDestinationBlend = Blend.One,
+                AlphaBlendFunction = BlendFunction.Max
+            };
+
+            spriteBatch.Begin(SpriteSortMode.Deferred, maxBlend);
+            DrawShadowsToBuffer(spriteBatch, pixel);
+            spriteBatch.End();
+
+            // === Pass 3: Draw light map ===
             gd.SetRenderTarget(lightMapTarget);
-            gd.Clear(Color.Black); // Start with darkness
+            gd.Clear(new Color(128, 128, 128)); // 50% ambient baseline
 
             // Draw lights (additive blending)
             spriteBatch.Begin(SpriteSortMode.Deferred, BlendState.Additive);
             DrawLights(spriteBatch, lightTexture);
             spriteBatch.End();
 
-            // Draw shadows on top of lights (subtractive/alpha blend)
-            spriteBatch.Begin(SpriteSortMode.Deferred, BlendState.AlphaBlend);
-            DrawShadows(spriteBatch, pixel);
+            // Subtract shadows from light map
+            var subtractBlend = new BlendState
+            {
+                ColorSourceBlend = Blend.One,
+                ColorDestinationBlend = Blend.One,
+                ColorBlendFunction = BlendFunction.ReverseSubtract,
+                AlphaSourceBlend = Blend.One,
+                AlphaDestinationBlend = Blend.One,
+                AlphaBlendFunction = BlendFunction.ReverseSubtract
+            };
+
+            spriteBatch.Begin(SpriteSortMode.Deferred, subtractBlend);
+            spriteBatch.Draw(shadowTarget, Vector2.Zero, Color.White);
             spriteBatch.End();
 
-            // === Pass 3: Combine scene with lighting ===
+            // === Pass 4: Combine scene with lighting ===
             gd.SetRenderTarget(null);
             gd.Clear(Color.Black);
 
@@ -412,7 +442,7 @@ public class GameScene : Scene
                 // Use shader to combine
                 lightingEffect.Parameters["SceneTexture"]?.SetValue(sceneTarget);
                 lightingEffect.Parameters["LightMapTexture"]?.SetValue(lightMapTarget);
-                lightingEffect.Parameters["AmbientLight"]?.SetValue(0.12f);
+                lightingEffect.Parameters["AmbientLight"]?.SetValue(0.5f);
 
                 spriteBatch.Begin(SpriteSortMode.Immediate, BlendState.Opaque, effect: lightingEffect);
                 spriteBatch.Draw(sceneTarget, Vector2.Zero, Color.White);
@@ -504,7 +534,7 @@ public class GameScene : Scene
         }
     }
 
-    private void DrawShadows(SpriteBatch spriteBatch, Texture2D pixel)
+    private void DrawShadowsToBuffer(SpriteBatch spriteBatch, Texture2D pixel)
     {
         // Collect all shadow casters (players + local player + projectiles)
         var casters = new List<(float x, float y, float size)>();
@@ -537,18 +567,18 @@ public class GameScene : Scene
 
             foreach (var (cx, cy, csize) in casters)
             {
-                DrawShadow(spriteBatch, pixel, lamp.X, lamp.Y, lamp.Radius, cx, cy, csize);
+                DrawShadowToBuffer(spriteBatch, pixel, lamp.X, lamp.Y, lamp.Radius, cx, cy, csize);
             }
         }
     }
 
-    private void DrawShadow(SpriteBatch spriteBatch, Texture2D pixel,
+    private void DrawShadowToBuffer(SpriteBatch spriteBatch, Texture2D pixel,
         float lightX, float lightY, float lightRadius,
         float casterX, float casterY, float casterSize)
     {
-        // Direction from light to caster
-        var dx = casterX - lightX;
-        var dy = casterY - lightY;
+        // Direction from caster to light (shadow points TOWARD light)
+        var dx = lightX - casterX;
+        var dy = lightY - casterY;
         var dist = MathF.Sqrt(dx * dx + dy * dy);
 
         if (dist < 1f || dist > lightRadius * 1.5f) return;
@@ -557,42 +587,34 @@ public class GameScene : Scene
         dx /= dist;
         dy /= dist;
 
-        // Shadow length based on distance from light (longer when closer)
-        var shadowLength = MathHelper.Clamp(200f * (1f - dist / (lightRadius * 1.5f)), 30f, 300f);
-        var shadowWidth = casterSize * 1.2f;
+        // Shadow length based on distance from light (longer when closer to light)
+        var shadowLength = MathHelper.Clamp(180f * (1f - dist / (lightRadius * 1.5f)), 20f, 250f);
+        var shadowWidth = casterSize * 1.5f;
 
-        // Shadow starts at caster and extends away from light
-        var shadowStartX = casterX + dx * casterSize * 0.5f;
-        var shadowStartY = casterY + dy * casterSize * 0.5f;
+        // Shadow starts at caster and extends TOWARD the light
+        var shadowStartX = casterX;
+        var shadowStartY = casterY;
 
-        // Calculate perpendicular for shadow width
-        var perpX = -dy;
-        var perpY = dx;
+        // Draw shadow as a simple elongated shape toward light
+        var angle = MathF.Atan2(dy, dx);
 
-        // Draw shadow as a series of lines with fading alpha
-        const int segments = 8;
+        // Draw shadow segments with fading intensity
+        const int segments = 6;
         for (int i = 0; i < segments; i++)
         {
-            var t = i / (float)segments;
-            var alpha = (byte)(180 * (1f - t * t)); // Quadratic falloff
+            var t = (i + 0.5f) / segments;
+            var intensity = (byte)(120 * (1f - t)); // Fade out toward light
 
             var segX = shadowStartX + dx * shadowLength * t;
             var segY = shadowStartY + dy * shadowLength * t;
-            var segWidth = shadowWidth * (1f + t * 2f); // Expands as it goes
+            var segWidth = shadowWidth * (1f - t * 0.5f); // Narrows toward light
+            var segLength = shadowLength / segments + 4;
 
-            var rect = new Rectangle(
-                (int)(segX - segWidth / 2),
-                (int)(segY - 2),
-                (int)segWidth,
-                (int)(shadowLength / segments + 2)
-            );
+            var destRect = new Rectangle((int)segX, (int)segY, (int)segWidth, (int)segLength);
+            var origin = new Vector2(segWidth / 2, segLength / 2);
 
-            // Rotate the rectangle to face away from light
-            var angle = MathF.Atan2(dy, dx);
-            var origin = new Vector2(segWidth / 2, 0);
-            var destRect = new Rectangle((int)segX, (int)segY, (int)segWidth, (int)(shadowLength / segments + 2));
-
-            spriteBatch.Draw(pixel, destRect, null, new Color(0, 0, 0, (int)alpha), angle, origin, SpriteEffects.None, 0);
+            // Draw with gray color (will be subtracted from light map)
+            spriteBatch.Draw(pixel, destRect, null, new Color(intensity, intensity, intensity, intensity), angle, origin, SpriteEffects.None, 0);
         }
     }
 

@@ -20,6 +20,7 @@ public class GameMain : Microsoft.Xna.Framework.Game
     // Lighting system
     public static RenderTarget2D? SceneTarget { get; private set; }
     public static RenderTarget2D? LightMapTarget { get; private set; }
+    public static RenderTarget2D? ShadowTarget { get; private set; }
     public static Effect? LightingEffect { get; private set; }
     public static Texture2D? LightTexture { get; private set; }
 
@@ -65,6 +66,7 @@ public class GameMain : Microsoft.Xna.Framework.Game
         // Create render targets for lighting
         SceneTarget = new RenderTarget2D(GraphicsDevice, 1280, 720);
         LightMapTarget = new RenderTarget2D(GraphicsDevice, 1280, 720);
+        ShadowTarget = new RenderTarget2D(GraphicsDevice, 1280, 720);
 
         // Try to load lighting shader
         try
