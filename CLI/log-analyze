@@ -1,0 +1,217 @@
+#!/bin/bash
+# Log Analysis Tool - Provides concise log summaries for context-efficient analysis
+# Designed to give Claude (or humans) quick insights without dumping full logs
+
+set -e
+
+LOG_DIR="${LOG_DIR:-/tmp/mmo-game}"
+
+# ============================================================================
+# COMMANDS
+# ============================================================================
+
+cmd_help() {
+    cat << 'EOF'
+Log Analysis Tool - Context-efficient log summaries
+
+USAGE: ./CLI/log-analyze <command> [logfile]
+
+COMMANDS:
+  summary [file]    Overall summary (default: server log)
+  errors [file]     Extract and categorize errors
+  network [file]    Network events summary
+  perf [file]       Performance metrics if available
+  diff <f1> <f2>    Compare two log files
+  last [n] [file]   Last n events (default: 10)
+
+OUTPUTS: Designed to be compact for LLM context efficiency
+
+EXAMPLES:
+  log-analyze summary               # Server log summary
+  log-analyze errors client         # Client errors
+  log-analyze network               # Network events
+  log-analyze last 5                # Last 5 log lines
+EOF
+}
+
+get_logfile() {
+    local hint="${1:-server}"
+    case $hint in
+        server) echo "$LOG_DIR/server.log" ;;
+        client) echo "$LOG_DIR/client.log" ;;
+        *)
+            if [ -f "$hint" ]; then
+                echo "$hint"
+            elif [ -f "$LOG_DIR/$hint.log" ]; then
+                echo "$LOG_DIR/$hint.log"
+            else
+                echo "$hint"
+            fi
+            ;;
+    esac
+}
+
+cmd_summary() {
+    local logfile=$(get_logfile "$1")
+
+    if [ ! -f "$logfile" ]; then
+        echo "NO_LOG: $logfile not found"
+        exit 0
+    fi
+
+    local total_lines=$(wc -l < "$logfile")
+    local errors=$(grep -ciE "(error|fail|exception)" "$logfile" 2>/dev/null || echo 0)
+    local warnings=$(grep -ci "warn" "$logfile" 2>/dev/null || echo 0)
+    local connects=$(grep -c "connected" "$logfile" 2>/dev/null || echo 0)
+    local disconnects=$(grep -c "disconnected" "$logfile" 2>/dev/null || echo 0)
+
+    echo "LOG_SUMMARY: $(basename "$logfile")"
+    echo "lines=$total_lines errors=$errors warnings=$warnings"
+    echo "connects=$connects disconnects=$disconnects"
+
+    # State detection
+    if grep -q "Application started" "$logfile" 2>/dev/null; then
+        echo "state=RUNNING"
+    elif grep -q "Hosting failed" "$logfile" 2>/dev/null; then
+        echo "state=FAILED"
+    elif [ "$total_lines" -eq 0 ]; then
+        echo "state=EMPTY"
+    else
+        echo "state=UNKNOWN"
+    fi
+
+    # Last meaningful line
+    echo "last: $(tail -n 1 "$logfile" | head -c 100)"
+}
+
+cmd_errors() {
+    local logfile=$(get_logfile "$1")
+
+    if [ ! -f "$logfile" ]; then
+        echo "NO_LOG: $logfile not found"
+        exit 0
+    fi
+
+    local error_count=$(grep -ciE "(error|fail|exception|critical)" "$logfile" 2>/dev/null || echo 0)
+
+    if [ "$error_count" -eq 0 ]; then
+        echo "ERRORS: 0 found in $(basename "$logfile")"
+        exit 0
+    fi
+
+    echo "ERRORS: $error_count in $(basename "$logfile")"
+    echo "---"
+
+    # Group by error type, show first occurrence of each
+    grep -iE "(error|fail|exception|critical)" "$logfile" | \
+        sed 's/^[^]]*\]//' | \
+        sort -u | \
+        head -n 10 | \
+        while read -r line; do
+            echo "- ${line:0:120}"
+        done
+}
+
+cmd_network() {
+    local logfile=$(get_logfile "$1")
+
+    if [ ! -f "$logfile" ]; then
+        echo "NO_LOG: $logfile not found"
+        exit 0
+    fi
+
+    echo "NETWORK_EVENTS: $(basename "$logfile")"
+
+    # Transport info
+    local transport=$(grep -o "Transport=[A-Za-z]*" "$logfile" | head -1 || echo "Transport=unknown")
+    local port=$(grep -oE "port [0-9]+" "$logfile" | head -1 || echo "port unknown")
+    echo "config: $transport $port"
+
+    # Connection events
+    local connects=$(grep -c "Player connected\|Connected to server" "$logfile" 2>/dev/null || echo 0)
+    local disconnects=$(grep -c "Player disconnected\|Disconnected" "$logfile" 2>/dev/null || echo 0)
+    local zones=$(grep -c "joined zone" "$logfile" 2>/dev/null || echo 0)
+
+    echo "events: connects=$connects disconnects=$disconnects zone_joins=$zones"
+
+    # Bind errors
+    if grep -q "Address already in use\|Bind exception" "$logfile" 2>/dev/null; then
+        echo "ISSUE: Port binding conflict detected"
+    fi
+}
+
+cmd_perf() {
+    local logfile=$(get_logfile "$1")
+
+    if [ ! -f "$logfile" ]; then
+        echo "NO_LOG: $logfile not found"
+        exit 0
+    fi
+
+    echo "PERF_METRICS: $(basename "$logfile")"
+
+    # Tick rate
+    local tickrate=$(grep -oE "[0-9]+ Hz" "$logfile" | head -1 || echo "unknown Hz")
+    echo "tickrate: $tickrate"
+
+    # Zone count
+    local zones=$(grep -c "Zone.*created" "$logfile" 2>/dev/null || echo 0)
+    echo "zones: $zones"
+}
+
+cmd_diff() {
+    local file1=$(get_logfile "$1")
+    local file2=$(get_logfile "$2")
+
+    if [ ! -f "$file1" ] || [ ! -f "$file2" ]; then
+        echo "DIFF_ERROR: Both files must exist"
+        exit 1
+    fi
+
+    echo "DIFF: $(basename "$file1") vs $(basename "$file2")"
+
+    local lines1=$(wc -l < "$file1")
+    local lines2=$(wc -l < "$file2")
+    local errors1=$(grep -ciE "(error|exception)" "$file1" 2>/dev/null || echo 0)
+    local errors2=$(grep -ciE "(error|exception)" "$file2" 2>/dev/null || echo 0)
+
+    echo "lines: $lines1 vs $lines2"
+    echo "errors: $errors1 vs $errors2"
+}
+
+cmd_last() {
+    local count="${1:-10}"
+    local logfile=$(get_logfile "${2:-server}")
+
+    if [ ! -f "$logfile" ]; then
+        echo "NO_LOG: $logfile not found"
+        exit 0
+    fi
+
+    echo "LAST_$count: $(basename "$logfile")"
+    tail -n "$count" "$logfile"
+}
+
+# ============================================================================
+# MAIN
+# ============================================================================
+main() {
+    local cmd="${1:-summary}"
+    shift || true
+
+    case $cmd in
+        help|--help|-h) cmd_help ;;
+        summary|s)      cmd_summary "$@" ;;
+        errors|e)       cmd_errors "$@" ;;
+        network|n)      cmd_network "$@" ;;
+        perf|p)         cmd_perf "$@" ;;
+        diff|d)         cmd_diff "$@" ;;
+        last|l)         cmd_last "$@" ;;
+        *)
+            echo "Unknown command: $cmd"
+            exit 1
+            ;;
+    esac
+}
+
+main "$@"

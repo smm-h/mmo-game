@@ -1,0 +1,87 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: zone-server
+  namespace: mmogame
+  labels:
+    app: zone-server
+spec:
+  replicas: 4  # One per zone initially
+  selector:
+    matchLabels:
+      app: zone-server
+  template:
+    metadata:
+      labels:
+        app: zone-server
+    spec:
+      containers:
+      - name: zone-server
+        image: mmogame-server:latest
+        ports:
+        - containerPort: 5000
+          name: http
+        - containerPort: 7777
+          protocol: UDP
+          name: game
+        env:
+        - name: ASPNETCORE_ENVIRONMENT
+          value: "Production"
+        - name: ConnectionStrings__Default
+          valueFrom:
+            secretKeyRef:
+              name: mmogame-secrets
+              key: db-connection
+        - name: Redis__Connection
+          valueFrom:
+            configMapKeyRef:
+              name: mmogame-config
+              key: redis-connection
+        resources:
+          requests:
+            memory: "512Mi"
+            cpu: "500m"
+          limits:
+            memory: "2Gi"
+            cpu: "2000m"
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 5000
+          initialDelaySeconds: 10
+          periodSeconds: 30
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 5000
+          initialDelaySeconds: 5
+          periodSeconds: 10
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: zone-server-http
+  namespace: mmogame
+spec:
+  selector:
+    app: zone-server
+  ports:
+  - port: 5000
+    targetPort: 5000
+    name: http
+  type: ClusterIP
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: zone-server-game
+  namespace: mmogame
+spec:
+  selector:
+    app: zone-server
+  ports:
+  - port: 7777
+    targetPort: 7777
+    protocol: UDP
+    name: game
+  type: LoadBalancer

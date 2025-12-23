@@ -1,0 +1,36 @@
+# Build stage
+FROM mcr.microsoft.com/dotnet/sdk:8.0 AS build
+WORKDIR /src
+
+# Copy csproj files and restore
+COPY src/Game.Shared/Game.Shared.csproj src/Game.Shared/
+COPY src/Game.Server/Game.Server.csproj src/Game.Server/
+RUN dotnet restore src/Game.Server/Game.Server.csproj
+
+# Copy everything and build
+COPY src/Game.Shared/ src/Game.Shared/
+COPY src/Game.Server/ src/Game.Server/
+RUN dotnet publish src/Game.Server/Game.Server.csproj -c Release -o /app --no-restore
+
+# Runtime stage
+FROM mcr.microsoft.com/dotnet/aspnet:8.0-alpine AS runtime
+WORKDIR /app
+
+# Install required dependencies for networking
+RUN apk add --no-cache icu-libs
+
+ENV DOTNET_SYSTEM_GLOBALIZATION_INVARIANT=false
+ENV ASPNETCORE_URLS=http://+:5000
+ENV ASPNETCORE_ENVIRONMENT=Production
+
+COPY --from=build /app .
+
+# Expose ports
+EXPOSE 5000/tcp
+EXPOSE 7777/udp
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=3s --start-period=5s \
+    CMD wget --no-verbose --tries=1 --spider http://localhost:5000/health || exit 1
+
+ENTRYPOINT ["dotnet", "MMOGame.Server.dll"]

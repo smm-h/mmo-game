@@ -1,0 +1,37 @@
+version: '3.8'
+
+# Development-only compose file
+# Usage: docker compose -f docker-compose.yml -f docker-compose.dev.yml up
+
+services:
+  postgres:
+    ports:
+      - "5432:5432"
+
+  redis:
+    ports:
+      - "6379:6379"
+
+  # Single zone for development
+  zone-dev:
+    build:
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile.server
+    container_name: mmogame-dev
+    environment:
+      - ZONE_ID=0
+      - ZONE_NAME=Development
+      - ConnectionStrings__Default=Host=postgres;Database=mmogame;Username=mmogame;Password=devpassword
+      - Redis__Connection=redis:6379
+      - ASPNETCORE_ENVIRONMENT=Development
+    ports:
+      - "5000:5000"
+      - "7777:7777/udp"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      # Mount source for hot reload
+      - ../../src/Game.Server:/app/src:ro

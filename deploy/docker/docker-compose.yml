@@ -1,0 +1,139 @@
+version: '3.8'
+
+services:
+  # PostgreSQL Database
+  postgres:
+    image: postgres:16-alpine
+    container_name: mmogame-db
+    environment:
+      POSTGRES_USER: mmogame
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-devpassword}
+      POSTGRES_DB: mmogame
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./init-db.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U mmogame"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Redis for sessions and cache
+  redis:
+    image: redis:7-alpine
+    container_name: mmogame-redis
+    command: redis-server --appendonly yes
+    volumes:
+      - redis_data:/data
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Zone Server 1 (Forest)
+  zone-forest:
+    build:
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile.server
+    container_name: mmogame-zone-forest
+    environment:
+      - ZONE_ID=1
+      - ZONE_NAME=Forest
+      - ConnectionStrings__Default=Host=postgres;Database=mmogame;Username=mmogame;Password=${DB_PASSWORD:-devpassword}
+      - Redis__Connection=redis:6379
+      - ASPNETCORE_ENVIRONMENT=Production
+    ports:
+      - "5001:5000"
+      - "7771:7777/udp"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  # Zone Server 2 (Desert)
+  zone-desert:
+    build:
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile.server
+    container_name: mmogame-zone-desert
+    environment:
+      - ZONE_ID=2
+      - ZONE_NAME=Desert
+      - ConnectionStrings__Default=Host=postgres;Database=mmogame;Username=mmogame;Password=${DB_PASSWORD:-devpassword}
+      - Redis__Connection=redis:6379
+      - ASPNETCORE_ENVIRONMENT=Production
+    ports:
+      - "5002:5000"
+      - "7772:7777/udp"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  # Zone Server 3 (Mountains)
+  zone-mountains:
+    build:
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile.server
+    container_name: mmogame-zone-mountains
+    environment:
+      - ZONE_ID=3
+      - ZONE_NAME=Mountains
+      - ConnectionStrings__Default=Host=postgres;Database=mmogame;Username=mmogame;Password=${DB_PASSWORD:-devpassword}
+      - Redis__Connection=redis:6379
+      - ASPNETCORE_ENVIRONMENT=Production
+    ports:
+      - "5003:5000"
+      - "7773:7777/udp"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  # Zone Server 4 (City)
+  zone-city:
+    build:
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile.server
+    container_name: mmogame-zone-city
+    environment:
+      - ZONE_ID=4
+      - ZONE_NAME=City
+      - ConnectionStrings__Default=Host=postgres;Database=mmogame;Username=mmogame;Password=${DB_PASSWORD:-devpassword}
+      - Redis__Connection=redis:6379
+      - ASPNETCORE_ENVIRONMENT=Production
+    ports:
+      - "5004:5000"
+      - "7774:7777/udp"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  # Voice Chat (LiveKit)
+  livekit:
+    image: livekit/livekit-server:latest
+    container_name: mmogame-voice
+    command: --config /etc/livekit.yaml
+    volumes:
+      - ./livekit.yaml:/etc/livekit.yaml:ro
+    ports:
+      - "7880:7880"
+      - "7881:7881"
+      - "7882:7882/udp"
+    depends_on:
+      redis:
+        condition: service_healthy
+
+volumes:
+  postgres_data:
+  redis_data:
