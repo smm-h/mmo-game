@@ -14,8 +14,17 @@ public class NetworkSettings
     public int TickRate { get; set; } = NetworkConfig.TickRate;
 
     private static NetworkSettings? _instance;
-    private static readonly string ConfigPath = Path.Combine(
-        AppDomain.CurrentDomain.BaseDirectory, "network.json");
+    private static readonly string ConfigPath = FindConfigPath();
+
+    private static string FindConfigPath()
+    {
+        // Try current working directory first (repo root when running from CLI)
+        var cwdPath = Path.Combine(Directory.GetCurrentDirectory(), "network.json");
+        if (File.Exists(cwdPath)) return cwdPath;
+
+        // Fall back to bin directory
+        return Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "network.json");
+    }
 
     public static NetworkSettings Instance => _instance ??= Load();
 
