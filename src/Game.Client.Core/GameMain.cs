@@ -1,5 +1,6 @@
 using Microsoft.Xna.Framework;
 using Microsoft.Xna.Framework.Graphics;
+using Microsoft.Xna.Framework.Input;
 using Game.Client.Core.Scenes;
 
 namespace Game.Client.Core;
@@ -10,6 +11,7 @@ public class GameMain : Microsoft.Xna.Framework.Game
     private SpriteBatch _spriteBatch = null!;
     private SceneManager _sceneManager = null!;
     private NetworkClient _networkClient = null!;
+    private KeyboardState _prevKeyboard;
 
     // Shared rendering resources
     public static Texture2D? PixelTexture { get; private set; }
@@ -60,6 +62,17 @@ public class GameMain : Microsoft.Xna.Framework.Game
 
     protected override void Update(GameTime gameTime)
     {
+        var keyboard = Keyboard.GetState();
+
+        // F11 to toggle fullscreen
+        if (keyboard.IsKeyDown(Keys.F11) && _prevKeyboard.IsKeyUp(Keys.F11))
+        {
+            _graphics.IsFullScreen = !_graphics.IsFullScreen;
+            _graphics.ApplyChanges();
+        }
+
+        _prevKeyboard = keyboard;
+
         _networkClient.PollEvents();
         _sceneManager.Update(gameTime);
         base.Update(gameTime);

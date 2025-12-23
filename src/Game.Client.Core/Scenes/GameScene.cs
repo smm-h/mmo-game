@@ -37,6 +37,14 @@ public class GameScene : Scene
     private string _killFeed = "";
     private float _killFeedTimer;
 
+    // Roll state
+    private bool _isRolling;
+    private float _rollTimer;
+    private float _rollCooldown;
+    private const float RollDuration = 1f;
+    private const float RollCooldownTime = 2f;
+    private const float RollSpeedMultiplier = 2.5f;
+
     public GameScene(uint localNetId, float spawnX, float spawnY)
     {
         _localNetId = localNetId;
@@ -54,6 +62,7 @@ public class GameScene : Scene
         NetworkClient.OnProjectileSpawn += OnProjectileSpawn;
         NetworkClient.OnPlayerHit += OnPlayerHit;
         NetworkClient.OnPlayerDeath += OnPlayerDeath;
+        NetworkClient.OnRollState += OnRollState;
         Console.WriteLine($"[Scene] GameScene entered - Local player netId={_localNetId}");
     }
 
@@ -65,6 +74,7 @@ public class GameScene : Scene
         NetworkClient.OnProjectileSpawn -= OnProjectileSpawn;
         NetworkClient.OnPlayerHit -= OnPlayerHit;
         NetworkClient.OnPlayerDeath -= OnPlayerDeath;
+        NetworkClient.OnRollState -= OnRollState;
     }
 
     private void OnPlayerUpdate(uint netId, float x, float y, int health, uint ackSequence)
@@ -180,6 +190,22 @@ public class GameScene : Scene
         SceneManager.SetScene(new ConnectScene());
     }
 
+    private void OnRollState(uint playerId, bool isRolling)
+    {
+        if (playerId == _localNetId)
+        {
+            _isRolling = isRolling;
+            if (!isRolling)
+            {
+                _rollCooldown = RollCooldownTime;
+            }
+        }
+        else if (_players.TryGetValue(playerId, out var player))
+        {
+            player.IsRolling = isRolling;
+        }
+    }
+
     public override void Update(GameTime gameTime)
     {
         var dt = (float)gameTime.ElapsedGameTime.TotalSeconds;
@@ -189,6 +215,33 @@ public class GameScene : Scene
         // Update kill feed timer
         if (_killFeedTimer > 0)
             _killFeedTimer -= dt;
+
+        // Update roll timers
+        if (_isRolling)
+        {
+            _rollTimer -= dt;
+            if (_rollTimer <= 0)
+            {
+                _isRolling = false;
+                _rollCooldown = RollCooldownTime;
+            }
+        }
+        else if (_rollCooldown > 0)
+        {
+            _rollCooldown -= dt;
+        }
+
+        // Space bar to roll
+        if (keyboard.IsKeyDown(Keys.Space) && _prevKeyboard.IsKeyUp(Keys.Space))
+        {
+            if (_localHealth > 0 && !_isRolling && _rollCooldown <= 0)
+            {
+                NetworkClient.SendRoll();
+                // Optimistic local prediction
+                _isRolling = true;
+                _rollTimer = RollDuration;
+            }
+        }
 
         // Gather movement input
         float moveX = 0, moveY = 0;
@@ -225,19 +278,20 @@ public class GameScene : Scene
             // Send input to server
             NetworkClient.SendInput(moveX, moveY, attack, interact, _inputSequence);
 
-            // Immediate client-side prediction
-            _renderX += moveX * MoveSpeed * dt;
-            _renderY += moveY * MoveSpeed * dt;
+            // Immediate client-side prediction (with roll speed boost)
+            var speedMultiplier = _isRolling ? RollSpeedMultiplier : 1f;
+            _renderX += moveX * MoveSpeed * speedMultiplier * dt;
+            _renderY += moveY * MoveSpeed * speedMultiplier * dt;
 
             // Clamp to world bounds
             _renderX = Math.Clamp(_renderX, 20, 1260);
             _renderY = Math.Clamp(_renderY, 20, 700);
         }
 
-        // Mouse click to shoot
+        // Mouse click to shoot (blocked while rolling)
         if (mouse.LeftButton == ButtonState.Pressed && _prevMouse.LeftButton == ButtonState.Released)
         {
-            if (_localHealth > 0)
+            if (_localHealth > 0 && !_isRolling)
             {
                 NetworkClient.SendShoot(mouse.X, mouse.Y);
             }
@@ -306,16 +360,17 @@ public class GameScene : Scene
             spriteBatch.Draw(pixel, new Rectangle((int)proj.X - 4, (int)proj.Y - 4, 8, 8), projColor);
         }
 
-        // Draw other players (blue) with interpolation
+        // Draw other players (blue, cyan if rolling) with interpolation
         foreach (var (netId, player) in _players)
         {
             float drawX = MathHelper.Lerp(player.PrevX, player.X, player.InterpT);
             float drawY = MathHelper.Lerp(player.PrevY, player.Y, player.InterpT);
-            DrawPlayer(spriteBatch, pixel, drawX, drawY, player.Health, Color.CornflowerBlue, false);
+            var playerColor = player.IsRolling ? Color.Cyan : Color.CornflowerBlue;
+            DrawPlayer(spriteBatch, pixel, drawX, drawY, player.Health, playerColor, false);
         }
 
-        // Draw local player (green) - gray if dead
-        var localColor = _localHealth > 0 ? Color.LimeGreen : Color.Gray;
+        // Draw local player (green) - cyan if rolling - gray if dead
+        var localColor = _localHealth <= 0 ? Color.Gray : (_isRolling ? Color.Cyan : Color.LimeGreen);
         DrawPlayer(spriteBatch, pixel, _renderX, _renderY, _localHealth, localColor, true);
 
         // Draw UI
@@ -378,7 +433,7 @@ public class GameScene : Scene
             spriteBatch.DrawString(font, $"HP: {_localHealth}", new Vector2(20, 8), _localHealth > 30 ? Color.White : Color.Red);
             spriteBatch.DrawString(font, $"Players: {_players.Count + 1}", new Vector2(120, 8), Color.White);
             spriteBatch.DrawString(font, $"Ping: {_latency}ms", new Vector2(260, 8), Color.White);
-            spriteBatch.DrawString(font, "WASD move | Click to shoot | ESC quit", new Vector2(700, 8), Color.Gray);
+            spriteBatch.DrawString(font, "WASD move | Click shoot | Space roll | ESC quit", new Vector2(650, 8), Color.Gray);
 
             // Kill feed
             if (_killFeedTimer > 0 && !string.IsNullOrEmpty(_killFeed))
@@ -423,6 +478,7 @@ public class GameScene : Scene
         public int Health = 100;
         public float InterpT = 1f;
         public DateTime LastUpdate = DateTime.UtcNow;
+        public bool IsRolling;
     }
 
     private class ProjectileState

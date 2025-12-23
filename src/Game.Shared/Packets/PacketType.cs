@@ -41,6 +41,8 @@ public enum PacketType : byte
     ProjectileHit = 57,
     PlayerHit = 58,
     PlayerDeath = 59,
+    Roll = 70,
+    RollState = 71,
 
     // Server -> Client state
     WorldSnapshot = 60,

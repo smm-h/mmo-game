@@ -115,6 +115,9 @@ public class NetworkService : IDisposable
             case PacketType.Shoot:
                 HandleShoot(connection, data);
                 break;
+            case PacketType.Roll:
+                HandleRoll(connection);
+                break;
             case PacketType.Heartbeat:
                 connection.LastHeartbeat = DateTime.UtcNow;
                 break;
@@ -168,15 +171,34 @@ public class NetworkService : IDisposable
         const float inputDelta = 1f / 60f;
         const float moveSpeed = 200f;
 
+        // Apply roll speed boost
+        var speedMultiplier = connection.IsRolling ? PlayerConnection.RollSpeedMultiplier : 1f;
+
         // Update player position (server authoritative)
-        connection.PositionX += moveX * moveSpeed * inputDelta;
-        connection.PositionY += moveY * moveSpeed * inputDelta;
+        connection.PositionX += moveX * moveSpeed * speedMultiplier * inputDelta;
+        connection.PositionY += moveY * moveSpeed * speedMultiplier * inputDelta;
 
         // Clamp to world bounds
         connection.PositionX = Math.Clamp(connection.PositionX, 20, 1260);
         connection.PositionY = Math.Clamp(connection.PositionY, 20, 700);
 
         connection.LastInputSequence = sequence;
+    }
+
+    private void HandleRoll(PlayerConnection connection)
+    {
+        if (connection.Zone == null || connection.Health <= 0) return;
+        if (connection.IsRolling || connection.RollCooldown > 0) return;
+
+        connection.IsRolling = true;
+        connection.RollTimer = PlayerConnection.RollDuration;
+
+        // Broadcast roll state to zone
+        var packet = new byte[6];
+        packet[0] = (byte)PacketType.RollState;
+        BitConverter.GetBytes(connection.NetworkId).CopyTo(packet, 1);
+        packet[5] = 1; // rolling = true
+        BroadcastToZone(connection.Zone, packet, DeliveryType.ReliableOrdered);
     }
 
     private void HandleShoot(PlayerConnection connection, byte[] data)
@@ -264,8 +286,9 @@ public class NetworkService : IDisposable
 
                     if (dist < 25f)
                     {
-                        // Hit!
-                        player.Health -= 20;
+                        // Hit! Apply damage reduction if rolling
+                        var damage = player.IsRolling ? (int)(20 * PlayerConnection.RollDamageReduction) : 20;
+                        player.Health -= damage;
                         toRemove.Add(proj);
 
                         // Broadcast hit
@@ -299,7 +322,7 @@ public class NetworkService : IDisposable
                 _projectiles.Remove(proj);
             }
 
-            // Handle respawns
+            // Handle respawns and roll timers
             foreach (var player in _connections.Values)
             {
                 if (player.Health <= 0 && player.RespawnTime.HasValue && DateTime.UtcNow >= player.RespawnTime)
@@ -308,6 +331,31 @@ public class NetworkService : IDisposable
                     player.PositionX = 400 + Random.Shared.Next(-100, 100);
                     player.PositionY = 300 + Random.Shared.Next(-100, 100);
                     player.RespawnTime = null;
+                }
+
+                // Update roll timers
+                if (player.IsRolling)
+                {
+                    player.RollTimer -= dt;
+                    if (player.RollTimer <= 0)
+                    {
+                        player.IsRolling = false;
+                        player.RollCooldown = PlayerConnection.RollCooldownTime;
+
+                        // Broadcast roll ended
+                        if (player.Zone != null)
+                        {
+                            var packet = new byte[6];
+                            packet[0] = (byte)PacketType.RollState;
+                            BitConverter.GetBytes(player.NetworkId).CopyTo(packet, 1);
+                            packet[5] = 0; // rolling = false
+                            BroadcastToZone(player.Zone, packet, DeliveryType.ReliableOrdered);
+                        }
+                    }
+                }
+                else if (player.RollCooldown > 0)
+                {
+                    player.RollCooldown -= dt;
                 }
             }
         }
@@ -371,6 +419,16 @@ public class PlayerConnection
     public uint LastInputSequence { get; set; }
     public int Health { get; set; } = 100;
     public DateTime? RespawnTime { get; set; }
+
+    // Roll state
+    public bool IsRolling { get; set; }
+    public float RollTimer { get; set; }
+    public float RollCooldown { get; set; }
+
+    public const float RollDuration = 1f;
+    public const float RollCooldownTime = 2f;
+    public const float RollSpeedMultiplier = 2.5f;
+    public const float RollDamageReduction = 0.2f; // Take 20% damage (5x less)
 
     public PlayerConnection(int peerId)
     {

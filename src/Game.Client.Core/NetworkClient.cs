@@ -16,6 +16,7 @@ public class NetworkClient : IDisposable
     public event Action<uint, uint, float, float, float, float>? OnProjectileSpawn; // projId, ownerId, x, y, velX, velY
     public event Action<uint, int, uint>? OnPlayerHit; // playerId, newHealth, shooterId
     public event Action<uint, uint>? OnPlayerDeath; // playerId, killerId
+    public event Action<uint, bool>? OnRollState; // playerId, isRolling
 
     public bool IsConnected => _connected;
     public uint LocalPlayerNetId { get; private set; }
@@ -85,6 +86,13 @@ public class NetworkClient : IDisposable
         _transport.SendToPeer(0, packet, DeliveryType.ReliableOrdered);
     }
 
+    public void SendRoll()
+    {
+        var packet = new byte[1];
+        packet[0] = (byte)PacketType.Roll;
+        _transport.SendToPeer(0, packet, DeliveryType.ReliableOrdered);
+    }
+
     private void OnPeerConnectedHandler(int peerId)
     {
         _connected = true;
@@ -125,6 +133,10 @@ public class NetworkClient : IDisposable
 
             case PacketType.PlayerDeath:
                 HandlePlayerDeath(data);
+                break;
+
+            case PacketType.RollState:
+                HandleRollState(data);
                 break;
         }
     }
@@ -205,6 +217,17 @@ public class NetworkClient : IDisposable
         var killerId = BitConverter.ToUInt32(data, 5);
 
         OnPlayerDeath?.Invoke(playerId, killerId);
+    }
+
+    private void HandleRollState(byte[] data)
+    {
+        // [packetType(1)] [playerId(4)] [isRolling(1)]
+        if (data.Length < 6) return;
+
+        var playerId = BitConverter.ToUInt32(data, 1);
+        var isRolling = data[5] == 1;
+
+        OnRollState?.Invoke(playerId, isRolling);
     }
 
     private void OnLatencyUpdatedHandler(int peerId, int latencyMs)
