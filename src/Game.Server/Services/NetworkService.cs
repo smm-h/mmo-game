@@ -9,8 +9,10 @@ public class NetworkService : IDisposable
     private readonly ZoneManager _zoneManager;
     private readonly Dictionary<int, PlayerConnection> _connections = new();
     private readonly List<Projectile> _projectiles = new();
+    private readonly List<Lamp> _lamps = new();
     private readonly object _lock = new();
     private uint _nextProjectileId = 1;
+    private uint _nextLampId = 1;
 
     public NetworkService(ZoneManager zoneManager)
     {
@@ -142,6 +144,9 @@ public class NetworkService : IDisposable
             zone.AddPlayer();
             connection.NetworkId = (uint)(connection.PeerId + 1000); // Simple ID assignment
 
+            // Initialize lamps for this zone if not done
+            InitializeLampsForZone(zone);
+
             response[1] = 1; // success
             BitConverter.GetBytes(zone.InstanceId).CopyTo(response, 2);
             BitConverter.GetBytes(connection.NetworkId).CopyTo(response, 6);
@@ -149,13 +154,63 @@ public class NetworkService : IDisposable
             BitConverter.GetBytes(300f).CopyTo(response, 14); // spawnY
 
             Console.WriteLine($"[Server] Player {connection.PeerId} joined zone {zoneId} instance {zone.InstanceId}");
+
+            _transport.SendToPeer(connection.PeerId, response, DeliveryType.ReliableOrdered);
+
+            // Send all existing lamps to the new player
+            SendLampsToPlayer(connection);
         }
         else
         {
             response[1] = 0; // failure
+            _transport.SendToPeer(connection.PeerId, response, DeliveryType.ReliableOrdered);
+        }
+    }
+
+    private void InitializeLampsForZone(ZoneInstance zone)
+    {
+        // Check if lamps already exist for this zone
+        if (_lamps.Any(l => l.Zone == zone)) return;
+
+        // Create lamps at fixed positions spread across the map
+        var lampPositions = new (float x, float y)[]
+        {
+            (200, 180), (640, 150), (1080, 180),
+            (320, 360), (960, 360),
+            (200, 540), (640, 570), (1080, 540)
+        };
+
+        foreach (var (x, y) in lampPositions)
+        {
+            _lamps.Add(new Lamp
+            {
+                Id = _nextLampId++,
+                Zone = zone,
+                X = x,
+                Y = y,
+                Radius = 180f,
+                IsOn = true
+            });
         }
 
-        _transport.SendToPeer(connection.PeerId, response, DeliveryType.ReliableOrdered);
+        Console.WriteLine($"[Server] Initialized {lampPositions.Length} lamps for zone {zone.InstanceId}");
+    }
+
+    private void SendLampsToPlayer(PlayerConnection connection)
+    {
+        foreach (var lamp in _lamps.Where(l => l.Zone == connection.Zone))
+        {
+            // [packetType(1)] [lampId(4)] [x(4)] [y(4)] [radius(4)] [isOn(1)]
+            var packet = new byte[18];
+            packet[0] = (byte)PacketType.LampSpawn;
+            BitConverter.GetBytes(lamp.Id).CopyTo(packet, 1);
+            BitConverter.GetBytes(lamp.X).CopyTo(packet, 5);
+            BitConverter.GetBytes(lamp.Y).CopyTo(packet, 9);
+            BitConverter.GetBytes(lamp.Radius).CopyTo(packet, 13);
+            packet[17] = lamp.IsOn ? (byte)1 : (byte)0;
+
+            _transport.SendToPeer(connection.PeerId, packet, DeliveryType.ReliableOrdered);
+        }
     }
 
     private void HandlePlayerInput(PlayerConnection connection, byte[] data)
@@ -315,6 +370,29 @@ public class NetworkService : IDisposable
                         break;
                     }
                 }
+
+                // Check collision with lamps (only lit lamps can be hit)
+                foreach (var lamp in _lamps)
+                {
+                    if (lamp.Zone != proj.Zone) continue;
+                    if (!lamp.IsOn) continue;
+
+                    var dx = lamp.X - proj.X;
+                    var dy = lamp.Y - proj.Y;
+                    var dist = MathF.Sqrt(dx * dx + dy * dy);
+
+                    if (dist < Lamp.HitRadius)
+                    {
+                        // Hit lamp - turn it off
+                        lamp.IsOn = false;
+                        lamp.OffTimer = Lamp.OffDuration;
+                        toRemove.Add(proj);
+
+                        // Broadcast lamp state change
+                        BroadcastLampState(lamp);
+                        break;
+                    }
+                }
             }
 
             foreach (var proj in toRemove)
@@ -358,7 +436,34 @@ public class NetworkService : IDisposable
                     player.RollCooldown -= dt;
                 }
             }
+
+            // Update lamp timers
+            foreach (var lamp in _lamps)
+            {
+                if (!lamp.IsOn && lamp.OffTimer > 0)
+                {
+                    lamp.OffTimer -= dt;
+                    if (lamp.OffTimer <= 0)
+                    {
+                        lamp.IsOn = true;
+                        BroadcastLampState(lamp);
+                    }
+                }
+            }
         }
+    }
+
+    private void BroadcastLampState(Lamp lamp)
+    {
+        if (lamp.Zone == null) return;
+
+        // [packetType(1)] [lampId(4)] [isOn(1)]
+        var packet = new byte[6];
+        packet[0] = (byte)PacketType.LampState;
+        BitConverter.GetBytes(lamp.Id).CopyTo(packet, 1);
+        packet[5] = lamp.IsOn ? (byte)1 : (byte)0;
+
+        BroadcastToZone(lamp.Zone, packet, DeliveryType.ReliableOrdered);
     }
 
     public void BroadcastWorldState()
@@ -446,4 +551,17 @@ public class Projectile
     public float VelX { get; set; }
     public float VelY { get; set; }
     public DateTime SpawnTime { get; set; }
+}
+
+public class Lamp
+{
+    public uint Id { get; set; }
+    public ZoneInstance? Zone { get; set; }
+    public float X { get; set; }
+    public float Y { get; set; }
+    public float Radius { get; set; } = 200f;
+    public bool IsOn { get; set; } = true;
+    public float OffTimer { get; set; }
+    public const float OffDuration = 5f;
+    public const float HitRadius = 20f;
 }

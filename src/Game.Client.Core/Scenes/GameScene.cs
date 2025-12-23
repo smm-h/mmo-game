@@ -25,6 +25,9 @@ public class GameScene : Scene
     // Projectiles
     private readonly Dictionary<uint, ProjectileState> _projectiles = new();
 
+    // Lamps
+    private readonly Dictionary<uint, LampState> _lamps = new();
+
     // Input
     private KeyboardState _prevKeyboard;
     private MouseState _prevMouse;
@@ -63,6 +66,8 @@ public class GameScene : Scene
         NetworkClient.OnPlayerHit += OnPlayerHit;
         NetworkClient.OnPlayerDeath += OnPlayerDeath;
         NetworkClient.OnRollState += OnRollState;
+        NetworkClient.OnLampSpawn += OnLampSpawn;
+        NetworkClient.OnLampState += OnLampState;
         Console.WriteLine($"[Scene] GameScene entered - Local player netId={_localNetId}");
     }
 
@@ -75,6 +80,8 @@ public class GameScene : Scene
         NetworkClient.OnPlayerHit -= OnPlayerHit;
         NetworkClient.OnPlayerDeath -= OnPlayerDeath;
         NetworkClient.OnRollState -= OnRollState;
+        NetworkClient.OnLampSpawn -= OnLampSpawn;
+        NetworkClient.OnLampState -= OnLampState;
     }
 
     private void OnPlayerUpdate(uint netId, float x, float y, int health, uint ackSequence)
@@ -203,6 +210,25 @@ public class GameScene : Scene
         else if (_players.TryGetValue(playerId, out var player))
         {
             player.IsRolling = isRolling;
+        }
+    }
+
+    private void OnLampSpawn(uint lampId, float x, float y, float radius, bool isOn)
+    {
+        _lamps[lampId] = new LampState
+        {
+            X = x,
+            Y = y,
+            Radius = radius,
+            IsOn = isOn
+        };
+    }
+
+    private void OnLampState(uint lampId, bool isOn)
+    {
+        if (_lamps.TryGetValue(lampId, out var lamp))
+        {
+            lamp.IsOn = isOn;
         }
     }
 
@@ -341,15 +367,99 @@ public class GameScene : Scene
 
     public override void Draw(SpriteBatch spriteBatch, GameTime gameTime)
     {
-        spriteBatch.Begin();
-
         var pixel = GameMain.PixelTexture;
-        if (pixel == null)
+        var lightTexture = GameMain.LightTexture;
+        var sceneTarget = GameMain.SceneTarget;
+        var lightMapTarget = GameMain.LightMapTarget;
+        var lightingEffect = GameMain.LightingEffect;
+        var gd = spriteBatch.GraphicsDevice;
+
+        if (pixel == null) return;
+
+        // Check if we have lamps and lighting resources
+        bool useLighting = _lamps.Count > 0 && lightTexture != null && sceneTarget != null && lightMapTarget != null;
+
+        if (useLighting)
         {
+            // === Pass 1: Draw scene to render target ===
+            gd.SetRenderTarget(sceneTarget);
+            gd.Clear(new Color(30, 30, 40));
+
+            spriteBatch.Begin();
+            DrawSceneContent(spriteBatch, pixel);
             spriteBatch.End();
-            return;
+
+            // === Pass 2: Draw light map ===
+            gd.SetRenderTarget(lightMapTarget);
+            gd.Clear(Color.Black); // Start with darkness
+
+            // Draw lights (additive blending)
+            spriteBatch.Begin(SpriteSortMode.Deferred, BlendState.Additive);
+            DrawLights(spriteBatch, lightTexture);
+            spriteBatch.End();
+
+            // Draw shadows on top of lights (subtractive/alpha blend)
+            spriteBatch.Begin(SpriteSortMode.Deferred, BlendState.AlphaBlend);
+            DrawShadows(spriteBatch, pixel);
+            spriteBatch.End();
+
+            // === Pass 3: Combine scene with lighting ===
+            gd.SetRenderTarget(null);
+            gd.Clear(Color.Black);
+
+            if (lightingEffect != null)
+            {
+                // Use shader to combine
+                lightingEffect.Parameters["SceneTexture"]?.SetValue(sceneTarget);
+                lightingEffect.Parameters["LightMapTexture"]?.SetValue(lightMapTarget);
+                lightingEffect.Parameters["AmbientLight"]?.SetValue(0.12f);
+
+                spriteBatch.Begin(SpriteSortMode.Immediate, BlendState.Opaque, effect: lightingEffect);
+                spriteBatch.Draw(sceneTarget, Vector2.Zero, Color.White);
+                spriteBatch.End();
+            }
+            else
+            {
+                // Fallback: multiply blend
+                spriteBatch.Begin();
+                spriteBatch.Draw(sceneTarget, Vector2.Zero, Color.White);
+                spriteBatch.End();
+
+                spriteBatch.Begin(SpriteSortMode.Deferred, new BlendState
+                {
+                    ColorSourceBlend = Blend.DestinationColor,
+                    ColorDestinationBlend = Blend.Zero,
+                    AlphaSourceBlend = Blend.One,
+                    AlphaDestinationBlend = Blend.Zero
+                });
+                spriteBatch.Draw(lightMapTarget, Vector2.Zero, Color.White);
+                spriteBatch.End();
+            }
+
+            // Draw lamps themselves on top
+            spriteBatch.Begin();
+            DrawLampBulbs(spriteBatch, pixel);
+            spriteBatch.End();
+        }
+        else
+        {
+            // No lighting - draw normally
+            gd.SetRenderTarget(null);
+            gd.Clear(new Color(30, 30, 40));
+
+            spriteBatch.Begin();
+            DrawSceneContent(spriteBatch, pixel);
+            spriteBatch.End();
         }
 
+        // Draw UI on top (always)
+        spriteBatch.Begin();
+        DrawUI(spriteBatch, pixel);
+        spriteBatch.End();
+    }
+
+    private void DrawSceneContent(SpriteBatch spriteBatch, Texture2D pixel)
+    {
         // Draw ground/grid
         DrawGrid(spriteBatch, pixel);
 
@@ -372,11 +482,144 @@ public class GameScene : Scene
         // Draw local player (green) - cyan if rolling - gray if dead
         var localColor = _localHealth <= 0 ? Color.Gray : (_isRolling ? Color.Cyan : Color.LimeGreen);
         DrawPlayer(spriteBatch, pixel, _renderX, _renderY, _localHealth, localColor, true);
+    }
 
-        // Draw UI
-        DrawUI(spriteBatch, pixel);
+    private void DrawLights(SpriteBatch spriteBatch, Texture2D lightTexture)
+    {
+        foreach (var lamp in _lamps.Values)
+        {
+            if (!lamp.IsOn) continue;
 
-        spriteBatch.End();
+            var lightSize = (int)(lamp.Radius * 2.5f);
+            var lightRect = new Rectangle(
+                (int)(lamp.X - lightSize / 2),
+                (int)(lamp.Y - lightSize / 2),
+                lightSize,
+                lightSize
+            );
+
+            // Warm light color
+            var lightColor = new Color(255, 220, 180);
+            spriteBatch.Draw(lightTexture, lightRect, lightColor);
+        }
+    }
+
+    private void DrawShadows(SpriteBatch spriteBatch, Texture2D pixel)
+    {
+        // Collect all shadow casters (players + local player + projectiles)
+        var casters = new List<(float x, float y, float size)>();
+
+        // Local player
+        if (_localHealth > 0)
+            casters.Add((_renderX, _renderY, 20f));
+
+        // Other players
+        foreach (var player in _players.Values)
+        {
+            if (player.Health > 0)
+            {
+                float drawX = MathHelper.Lerp(player.PrevX, player.X, player.InterpT);
+                float drawY = MathHelper.Lerp(player.PrevY, player.Y, player.InterpT);
+                casters.Add((drawX, drawY, 16f));
+            }
+        }
+
+        // Projectiles
+        foreach (var proj in _projectiles.Values)
+        {
+            casters.Add((proj.X, proj.Y, 4f));
+        }
+
+        // For each lamp, draw shadows from each caster
+        foreach (var lamp in _lamps.Values)
+        {
+            if (!lamp.IsOn) continue;
+
+            foreach (var (cx, cy, csize) in casters)
+            {
+                DrawShadow(spriteBatch, pixel, lamp.X, lamp.Y, lamp.Radius, cx, cy, csize);
+            }
+        }
+    }
+
+    private void DrawShadow(SpriteBatch spriteBatch, Texture2D pixel,
+        float lightX, float lightY, float lightRadius,
+        float casterX, float casterY, float casterSize)
+    {
+        // Direction from light to caster
+        var dx = casterX - lightX;
+        var dy = casterY - lightY;
+        var dist = MathF.Sqrt(dx * dx + dy * dy);
+
+        if (dist < 1f || dist > lightRadius * 1.5f) return;
+
+        // Normalize direction
+        dx /= dist;
+        dy /= dist;
+
+        // Shadow length based on distance from light (longer when closer)
+        var shadowLength = MathHelper.Clamp(200f * (1f - dist / (lightRadius * 1.5f)), 30f, 300f);
+        var shadowWidth = casterSize * 1.2f;
+
+        // Shadow starts at caster and extends away from light
+        var shadowStartX = casterX + dx * casterSize * 0.5f;
+        var shadowStartY = casterY + dy * casterSize * 0.5f;
+
+        // Calculate perpendicular for shadow width
+        var perpX = -dy;
+        var perpY = dx;
+
+        // Draw shadow as a series of lines with fading alpha
+        const int segments = 8;
+        for (int i = 0; i < segments; i++)
+        {
+            var t = i / (float)segments;
+            var alpha = (byte)(180 * (1f - t * t)); // Quadratic falloff
+
+            var segX = shadowStartX + dx * shadowLength * t;
+            var segY = shadowStartY + dy * shadowLength * t;
+            var segWidth = shadowWidth * (1f + t * 2f); // Expands as it goes
+
+            var rect = new Rectangle(
+                (int)(segX - segWidth / 2),
+                (int)(segY - 2),
+                (int)segWidth,
+                (int)(shadowLength / segments + 2)
+            );
+
+            // Rotate the rectangle to face away from light
+            var angle = MathF.Atan2(dy, dx);
+            var origin = new Vector2(segWidth / 2, 0);
+            var destRect = new Rectangle((int)segX, (int)segY, (int)segWidth, (int)(shadowLength / segments + 2));
+
+            spriteBatch.Draw(pixel, destRect, null, new Color(0, 0, 0, (int)alpha), angle, origin, SpriteEffects.None, 0);
+        }
+    }
+
+    private void DrawLampBulbs(SpriteBatch spriteBatch, Texture2D pixel)
+    {
+        foreach (var lamp in _lamps.Values)
+        {
+            var bulbColor = lamp.IsOn ? new Color(255, 240, 200) : new Color(60, 50, 40);
+            var bulbSize = 16;
+            var rect = new Rectangle((int)(lamp.X - bulbSize / 2), (int)(lamp.Y - bulbSize / 2), bulbSize, bulbSize);
+
+            // Draw bulb
+            spriteBatch.Draw(pixel, rect, bulbColor);
+
+            // Draw glow around lit bulbs
+            if (lamp.IsOn)
+            {
+                var glowRect = new Rectangle(rect.X - 4, rect.Y - 4, rect.Width + 8, rect.Height + 8);
+                spriteBatch.Draw(pixel, glowRect, new Color(255, 220, 150, 60));
+            }
+
+            // Draw border
+            spriteBatch.Draw(pixel, new Rectangle(rect.X, rect.Y, rect.Width, 2), Color.Black);
+            spriteBatch.Draw(pixel, new Rectangle(rect.X, rect.Bottom - 2, rect.Width, 2), Color.Black);
+            spriteBatch.Draw(pixel, new Rectangle(rect.X, rect.Y, 2, rect.Height), Color.Black);
+            spriteBatch.Draw(pixel, new Rectangle(rect.Right - 2, rect.Y, 2, rect.Height), Color.Black);
+        }
     }
 
     private void DrawGrid(SpriteBatch spriteBatch, Texture2D pixel)
@@ -489,5 +732,13 @@ public class GameScene : Scene
         public float VelX;
         public float VelY;
         public DateTime SpawnTime;
+    }
+
+    private class LampState
+    {
+        public float X;
+        public float Y;
+        public float Radius;
+        public bool IsOn;
     }
 }

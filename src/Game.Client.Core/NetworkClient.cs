@@ -17,6 +17,8 @@ public class NetworkClient : IDisposable
     public event Action<uint, int, uint>? OnPlayerHit; // playerId, newHealth, shooterId
     public event Action<uint, uint>? OnPlayerDeath; // playerId, killerId
     public event Action<uint, bool>? OnRollState; // playerId, isRolling
+    public event Action<uint, float, float, float, bool>? OnLampSpawn; // lampId, x, y, radius, isOn
+    public event Action<uint, bool>? OnLampState; // lampId, isOn
 
     public bool IsConnected => _connected;
     public uint LocalPlayerNetId { get; private set; }
@@ -138,6 +140,14 @@ public class NetworkClient : IDisposable
             case PacketType.RollState:
                 HandleRollState(data);
                 break;
+
+            case PacketType.LampSpawn:
+                HandleLampSpawn(data);
+                break;
+
+            case PacketType.LampState:
+                HandleLampState(data);
+                break;
         }
     }
 
@@ -228,6 +238,31 @@ public class NetworkClient : IDisposable
         var isRolling = data[5] == 1;
 
         OnRollState?.Invoke(playerId, isRolling);
+    }
+
+    private void HandleLampSpawn(byte[] data)
+    {
+        // [packetType(1)] [lampId(4)] [x(4)] [y(4)] [radius(4)] [isOn(1)]
+        if (data.Length < 18) return;
+
+        var lampId = BitConverter.ToUInt32(data, 1);
+        var x = BitConverter.ToSingle(data, 5);
+        var y = BitConverter.ToSingle(data, 9);
+        var radius = BitConverter.ToSingle(data, 13);
+        var isOn = data[17] == 1;
+
+        OnLampSpawn?.Invoke(lampId, x, y, radius, isOn);
+    }
+
+    private void HandleLampState(byte[] data)
+    {
+        // [packetType(1)] [lampId(4)] [isOn(1)]
+        if (data.Length < 6) return;
+
+        var lampId = BitConverter.ToUInt32(data, 1);
+        var isOn = data[5] == 1;
+
+        OnLampState?.Invoke(lampId, isOn);
     }
 
     private void OnLatencyUpdatedHandler(int peerId, int latencyMs)

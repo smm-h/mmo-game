@@ -20,3 +20,6 @@
 /processorParam:TextureFormat=Compressed
 /build:Fonts/Default.spritefont
 
+# Note: Shader compilation requires Wine on Linux.
+# The game uses a fallback multiply blend when shaders aren't available.
+

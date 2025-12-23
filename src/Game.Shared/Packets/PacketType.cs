@@ -44,6 +44,10 @@ public enum PacketType : byte
     Roll = 70,
     RollState = 71,
 
+    // Environment
+    LampSpawn = 80,
+    LampState = 81,
+
     // Server -> Client state
     WorldSnapshot = 60,
     DeltaSnapshot = 61,
