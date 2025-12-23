@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Text.Json.Serialization;
 
 namespace Game.Shared.Network;
 
@@ -35,8 +36,12 @@ public class NetworkSettings
             if (File.Exists(ConfigPath))
             {
                 var json = File.ReadAllText(ConfigPath);
-                var settings = JsonSerializer.Deserialize<NetworkSettings>(json,
-                    new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
+                var options = new JsonSerializerOptions
+                {
+                    PropertyNameCaseInsensitive = true,
+                    Converters = { new JsonStringEnumConverter() }
+                };
+                var settings = JsonSerializer.Deserialize<NetworkSettings>(json, options);
                 if (settings != null)
                 {
                     Console.WriteLine($"[Network] Loaded config: Transport={settings.Transport}");
