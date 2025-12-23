@@ -44,7 +44,8 @@ public class NetworkSettings
                 var settings = JsonSerializer.Deserialize<NetworkSettings>(json, options);
                 if (settings != null)
                 {
-                    Console.WriteLine($"[Network] Loaded config: Transport={settings.Transport}");
+                    Console.WriteLine($"[Network] Loaded config from {ConfigPath}");
+                    Console.WriteLine($"[Network] Transport={settings.Transport}, Host={settings.ServerHost}, Port={settings.ServerPort}");
                     return settings;
                 }
             }
