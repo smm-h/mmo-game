@@ -429,7 +429,7 @@ public class GameScene : Scene
 
             // === Pass 2: Draw light map with raycast shadows ===
             gd.SetRenderTarget(lightMapTarget);
-            gd.Clear(new Color(40, 40, 40)); // ~15% ambient - darker for visible shadows
+            gd.Clear(new Color(50, 50, 50)); // ~20% ambient
 
             // For each lamp, draw light then subtract shadow volumes
             foreach (var lamp in _lamps.Values)
@@ -577,8 +577,8 @@ public class GameScene : Scene
             var far1 = corner1 + dir1 * ShadowLength;
             var far2 = corner2 + dir2 * ShadowLength;
 
-            // Create shadow quad (2 triangles) - use bright white so subtraction is strong
-            var shadowColor = new Color(255, 255, 255, 255);
+            // Create shadow quad (2 triangles) - medium gray for balanced subtraction
+            var shadowColor = new Color(140, 140, 140, 255);
 
             // Triangle 1: corner1, corner2, far1
             shadowVertices.Add(new ShadowVertex(corner1, shadowColor));
