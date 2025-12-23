@@ -390,23 +390,13 @@ public class GameScene : Scene
             DrawSceneContent(spriteBatch, pixel);
             spriteBatch.End();
 
-            // === Pass 2: Draw shadows to shadow buffer (max blend to prevent overdraw) ===
+            // === Pass 2: Draw shadows to shadow buffer ===
             gd.SetRenderTarget(shadowTarget);
             gd.Clear(Color.Transparent);
 
-            // Use max blend so overlapping shadows don't stack
-            var maxBlend = new BlendState
-            {
-                ColorSourceBlend = Blend.One,
-                ColorDestinationBlend = Blend.One,
-                ColorBlendFunction = BlendFunction.Max,
-                AlphaSourceBlend = Blend.One,
-                AlphaDestinationBlend = Blend.One,
-                AlphaBlendFunction = BlendFunction.Max
-            };
-
-            spriteBatch.Begin(SpriteSortMode.Deferred, maxBlend);
-            DrawShadowsToBuffer(spriteBatch, pixel);
+            // Draw shadows with alpha blend
+            spriteBatch.Begin(SpriteSortMode.Deferred, BlendState.AlphaBlend);
+            DrawShadowsToBuffer(spriteBatch, pixel, lightTexture);
             spriteBatch.End();
 
             // === Pass 3: Draw light map ===
@@ -534,7 +524,7 @@ public class GameScene : Scene
         }
     }
 
-    private void DrawShadowsToBuffer(SpriteBatch spriteBatch, Texture2D pixel)
+    private void DrawShadowsToBuffer(SpriteBatch spriteBatch, Texture2D pixel, Texture2D? lightTexture)
     {
         // Collect all shadow casters (players + local player + projectiles)
         var casters = new List<(float x, float y, float size)>();
@@ -567,54 +557,57 @@ public class GameScene : Scene
 
             foreach (var (cx, cy, csize) in casters)
             {
-                DrawShadowToBuffer(spriteBatch, pixel, lamp.X, lamp.Y, lamp.Radius, cx, cy, csize);
+                DrawShadowToBuffer(spriteBatch, pixel, lightTexture, lamp.X, lamp.Y, lamp.Radius, cx, cy, csize);
             }
         }
     }
 
-    private void DrawShadowToBuffer(SpriteBatch spriteBatch, Texture2D pixel,
+    private void DrawShadowToBuffer(SpriteBatch spriteBatch, Texture2D pixel, Texture2D? lightTexture,
         float lightX, float lightY, float lightRadius,
         float casterX, float casterY, float casterSize)
     {
-        // Direction from caster to light (shadow points TOWARD light)
-        var dx = lightX - casterX;
-        var dy = lightY - casterY;
+        // Direction from light to caster (shadow extends AWAY from light)
+        var dx = casterX - lightX;
+        var dy = casterY - lightY;
         var dist = MathF.Sqrt(dx * dx + dy * dy);
 
-        if (dist < 1f || dist > lightRadius * 1.5f) return;
+        if (dist < 1f || dist > lightRadius * 2f) return;
 
         // Normalize direction
         dx /= dist;
         dy /= dist;
 
-        // Shadow length based on distance from light (longer when closer to light)
-        var shadowLength = MathHelper.Clamp(180f * (1f - dist / (lightRadius * 1.5f)), 20f, 250f);
-        var shadowWidth = casterSize * 1.5f;
+        // Shadow length - longer when closer to light
+        var proximity = 1f - (dist / (lightRadius * 2f));
+        var shadowLength = 60f + proximity * 180f;
 
-        // Shadow starts at caster and extends TOWARD the light
-        var shadowStartX = casterX;
-        var shadowStartY = casterY;
+        // Use soft light texture if available for nice blur
+        var shadowTex = lightTexture ?? pixel;
 
-        // Draw shadow as a simple elongated shape toward light
-        var angle = MathF.Atan2(dy, dx);
-
-        // Draw shadow segments with fading intensity
-        const int segments = 6;
+        // Draw shadow as series of soft ellipses extending away from light
+        const int segments = 5;
         for (int i = 0; i < segments; i++)
         {
-            var t = (i + 0.5f) / segments;
-            var intensity = (byte)(120 * (1f - t)); // Fade out toward light
+            var t = (i + 1f) / segments;
+            var intensity = (int)(100 * proximity * (1f - t * 0.7f));
 
-            var segX = shadowStartX + dx * shadowLength * t;
-            var segY = shadowStartY + dy * shadowLength * t;
-            var segWidth = shadowWidth * (1f - t * 0.5f); // Narrows toward light
-            var segLength = shadowLength / segments + 4;
+            // Position along shadow
+            var segX = casterX + dx * shadowLength * t;
+            var segY = casterY + dy * shadowLength * t;
 
-            var destRect = new Rectangle((int)segX, (int)segY, (int)segWidth, (int)segLength);
-            var origin = new Vector2(segWidth / 2, segLength / 2);
+            // Shadow gets wider and softer as it extends
+            var segSize = (int)(casterSize * (1.5f + t * 2f));
 
-            // Draw with gray color (will be subtracted from light map)
-            spriteBatch.Draw(pixel, destRect, null, new Color(intensity, intensity, intensity, intensity), angle, origin, SpriteEffects.None, 0);
+            var rect = new Rectangle(
+                (int)(segX - segSize / 2),
+                (int)(segY - segSize / 2),
+                segSize,
+                segSize
+            );
+
+            // Draw soft shadow blob
+            var shadowColor = new Color(intensity, intensity, intensity, intensity);
+            spriteBatch.Draw(shadowTex, rect, shadowColor);
         }
     }
 
