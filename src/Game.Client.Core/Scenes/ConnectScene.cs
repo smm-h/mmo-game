@@ -53,7 +53,7 @@ public class ConnectScene : Scene
         {
             _connecting = true;
             _status = "Connecting...";
-            NetworkClient.Connect("127.0.0.1");
+            NetworkClient.Connect(Game.Shared.Network.NetworkSettings.Instance.ServerHost);
         }
 
         if (keyboard.IsKeyDown(Keys.Escape))
