@@ -429,7 +429,7 @@ public class GameScene : Scene
 
             // === Pass 2: Draw light map with raycast shadows ===
             gd.SetRenderTarget(lightMapTarget);
-            gd.Clear(new Color(64, 64, 64)); // 25% ambient
+            gd.Clear(new Color(40, 40, 40)); // ~15% ambient - darker for visible shadows
 
             // For each lamp, draw light then subtract shadow volumes
             foreach (var lamp in _lamps.Values)
@@ -514,14 +514,15 @@ public class GameScene : Scene
 
     private void DrawSingleLight(SpriteBatch spriteBatch, Texture2D lightTexture, LampState lamp)
     {
-        var lightSize = (int)(lamp.Radius * 2.5f);
+        var lightSize = (int)(lamp.Radius * 3f);
         var lightRect = new Rectangle(
             (int)(lamp.X - lightSize / 2),
             (int)(lamp.Y - lightSize / 2),
             lightSize,
             lightSize
         );
-        var lightColor = new Color(255, 220, 180);
+        // Brighter light for more contrast
+        var lightColor = new Color(255, 240, 200);
         spriteBatch.Draw(lightTexture, lightRect, lightColor);
     }
 
@@ -576,8 +577,8 @@ public class GameScene : Scene
             var far1 = corner1 + dir1 * ShadowLength;
             var far2 = corner2 + dir2 * ShadowLength;
 
-            // Create shadow quad (2 triangles)
-            var shadowColor = new Color(0, 0, 0, 255);
+            // Create shadow quad (2 triangles) - use bright white so subtraction is strong
+            var shadowColor = new Color(255, 255, 255, 255);
 
             // Triangle 1: corner1, corner2, far1
             shadowVertices.Add(new ShadowVertex(corner1, shadowColor));
